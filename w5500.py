@@ -16,6 +16,24 @@ MR = const(0b00) # Mode Register
 SIR = const(0x17) # Socket Interrupt Register
 SIMR = const(0x18) # Socket Interrupt Mask Register
 PHYCFGR = const(0x2e) # PHYsical ConFiGuRatuion
+VERSIONR = const(0x39) # VERSION Register
+
+# Socket Registers
+SN_MR = const(0x0) # Socket n Mode Register
+SN_CR = const(0x1) # Socket n Control Register
+SN_IR = const(0x2) # Socket n Interrupt Register
+SN_SR = const(0x3) # Socket n Status Register
+
+SN_MSSR = const(0x12) # Socket n Maximum Segment Size Register
+
+SN_RXBUF_SIZE = const(0x1e) # Socket n Receive BUFfer SIZE
+SN_TXBUF_SIZE = const(0x1f) # Socket n Transmit BUFfer SIZE
+
+SN_RX_RSR = const(0x26) # Socket n Receive Received Size Register
+SN_IMR = const(0x2c) # Socket n Interrupt Mask Register
+
+class NotW5500(Exception):
+    pass
 
 
 class W5500():
@@ -68,6 +86,12 @@ class W5500():
         self.rst_pin.value(1)
         time.sleep_ms(10)
     
+    def write8(self, addr, bsb, data):
+        self.write(addr, bsb, data.to_bytes(1))
+    
+    def write16(self, addr, bsb, data):
+        self.write(addr, bsb, data.to_bytes(2, byteorder='big'))
+    
     def write(self, addr, bsb, data):
         self.cs_pin.value(0)
         self.spi.write(addr.to_bytes(2, byteorder='big'))
@@ -104,20 +128,31 @@ class W5500():
         self.reset()
         
         # PHY Reset
-        self.write(PHYCFGR, COMMON_REGISTER, 0x00) # Reset
+        self.write8(PHYCFGR, COMMON_REGISTER, 0x00) # Reset
         time.sleep_ms(200) # Idk, 200 seems good
-        self.write(PHYCFGR, COMMON_REGISTER, 0xf8) # Reset: 1, OPMD: 1, OPMDC: All capable, Auto-negotiation enabled 
+        self.write8(PHYCFGR, COMMON_REGISTER, 0xf8) # Reset: 1, OPMD: 1, OPMDC: All capable, Auto-negotiation enabled 
         
         # SW Reset
-        self.write(MR, COMMON_REGISTER, 0x80) # RST bit
+        self.write8(MR, COMMON_REGISTER, 0x80) # RST bit
         time.sleep_ms(200) # Idk, 200 seems good
         
+        # Check Version
+        if self.read(VERSIONR, COMMON_REGISTER, 1)[0] != 0x04:
+            raise NotW5500
+        
+        self.write8(SN_MR, SN0_REGISTER, 0b100) # MAC RAW
+        
+        self.write8(SN_RXBUF_SIZE, SN0_REGISTER, 16) # 16Kb
+        self.write8(SN_TXBUF_SIZE, SN0_REGISTER, 16) # 16Kb
+        
+        self.write16(SN_MSSR, SN0_REGISTER, 1514) # Ethernet MTU
+        
+        self.write8(SN_IMR, SN0_REGISTER, 0b0001_1111) # Enable interrupts SEND_OK, TIMEOUT, RECV, DISCON, CON 
         
         # Enable interrupts on socket 0
-        self.write(SIMR, COMMON_REGISTER, 0b1)
+        self.write8(SIMR, COMMON_REGISTER, 0b1)
         
-        
-        
-        
-        
-
+        # Open socket
+        self.write8(SN_CR, SN0_REGISTER, 0x1) # OPEN
+        # Could check SN_SR for 0x42 / SN_IR
+        # OPEN interrupt is on, no need to manually check
