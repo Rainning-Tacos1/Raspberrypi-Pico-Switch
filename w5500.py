@@ -2,7 +2,7 @@
 # https://github.com/badlyby/w5500_macraw/blob/main/w5500.py
 # https://cdn.sparkfun.com/datasheets/Dev/Arduino/Shields/W5500_datasheet_v1.0.2_1.pdf
 
-from micropython import const
+from micropython import const, schedule
 import machine
 import time
 
@@ -13,6 +13,7 @@ SN0_RX_BUFFER = const(0b11)
 
 # Common register
 MR = const(0b00) # Mode Register
+IR = const(0x15) # Interrupt Register
 SIR = const(0x17) # Socket Interrupt Register
 SIMR = const(0x18) # Socket Interrupt Mask Register
 PHYCFGR = const(0x2e) # PHYsical ConFiGuRatuion
@@ -53,8 +54,18 @@ class W5500():
         self.sck_pin = machine.Pin(self.sck)
         self.mosi_pin = machine.Pin(self.mosi)
         self.miso_pin = machine.Pin(self.miso)
-        self.cs_pin = machine.Pin(self.cs)
-        self.rst_pin = machine.Pin(self.rst)
+        self.cs_pin = machine.Pin(self.cs, machine.Pin.OUT)
+        self.rst_pin = machine.Pin(self.rst, machine.Pin.OUT)
+        self._int_pin = machine.Pin(self._int, machine.Pin.IN, machine.Pin.PULL_UP)
+        
+        self._isr_safe = self.isr_safe
+        
+        self.spi = machine.SPI(
+            id=self.port,
+            sck = self.sck_pin,
+            mosi = self.mosi_pin,
+            miso = self.miso_pin,
+        )
         
         self._int_pin = machine.Pin(
             self._int,
@@ -62,16 +73,9 @@ class W5500():
             machine.Pin.PULL_UP
         )
         
-        self.spi = machine.SPI(1)
-        
     def spi_init(self):
         self.spi.init(
             baudrate = self.baud,
-            sck = self.sck_pin,
-            mosi = self.mosi_pin,
-            miso = self.miso_pin,
-            firstbit = machine.SPI.MSB,
-            bits = 8,
             polarity = 0,
             phase = 0
         )
@@ -90,38 +94,72 @@ class W5500():
         self.write(addr, bsb, data.to_bytes(1))
     
     def write16(self, addr, bsb, data):
-        self.write(addr, bsb, data.to_bytes(2, byteorder='big'))
+        self.write(addr, bsb, data.to_bytes(2, 'big'))
     
     def write(self, addr, bsb, data):
         self.cs_pin.value(0)
-        self.spi.write(addr.to_bytes(2, byteorder='big'))
-        self.spi.write(int(bsb & -0b100 | 0b100).tobytes(1))
+        self.spi.write(addr.to_bytes(2, 'big'))
+        self.spi.write(int((bsb << 3) | 0b100).to_bytes(1))
         self.spi.write(data)
         self.cs_pin.value(1)
 
+    def read8(self, addr, bsb):
+        return self.read(addr, bsb, 1)
+        
+    def read16(self, addr, bsb):
+        return self.read(addr, bsb, 2)
+
     def read(self, addr, bsb, nbytes):
         self.cs_pin.value(0)
-        self.spi.write(addr.to_bytes(2, byteorder='big'))
-        self.spi.write(int(bsb & -0b1000).tobytes(1))
+        self.spi.write(addr.to_bytes(2, 'big'))
+        self.spi.write(int((bsb << 3)).to_bytes(1))
         data = self.spi.read(nbytes)
         self.cs_pin.value(1)
         return data
     
     def link_status(self):
         status = int.from_bytes(
-            self.read(PHYCFGR, COMMON_REGISTER, 1)
+            self.read8(PHYCFGR, COMMON_REGISTER)
         ) & 0b111
         
-        link = [
+        link = (
             (10, "Half"),
             (100, "Half"),
             (10, "Full"),
             (100, "Full")
-        ]
+        )
         
         return (link[status >> 0x1]) if (status & 0x1) else None
+    
+    def isr_safe(self, _):
+        # Read which socket caused interrupts
+        # Only socket 0 should be triggering interrupts bc of the SIMR
         
+        #_IR = self.read8(IR, COMMON_REGISTER)
+        _SIR = self.read8(SIR, COMMON_REGISTER)
+        if _SIR[0] != 0x1: # Interrupt not on socket 0
+            return
+
+        SN0_IR = self.read8(SN_IR, SN0_REGISTER)[0]
         
+        # Process the interurpt
+        str_int = ""
+        str_int += "SEND_OK " if SN0_IR & 0b10000 else ""
+        str_int += "TIMEOUT " if SN0_IR & 0b01000 else ""
+        str_int += "RECV "    if SN0_IR & 0b00100 else ""
+        str_int += "DISCON "  if SN0_IR & 0b00010 else ""
+        str_int += "CON "     if SN0_IR & 0b00001 else ""
+        
+        # Acknowledge the interrupt
+        self.write8(SN_IR, SN0_REGISTER, SN0_IR)
+        
+        # Call the user ISR
+        self.isr(str_int)
+    
+    def isr_wrapper(self, pin):
+        schedule(self.isr_safe, 0)
+        
+    
     
     def init(self):
         self.spi_init()
@@ -137,7 +175,7 @@ class W5500():
         time.sleep_ms(200) # Idk, 200 seems good
         
         # Check Version
-        if self.read(VERSIONR, COMMON_REGISTER, 1)[0] != 0x04:
+        if self.read8(VERSIONR, COMMON_REGISTER)[0] != 0x04:
             raise NotW5500
         
         self.write8(SN_MR, SN0_REGISTER, 0b100) # MAC RAW
@@ -156,3 +194,17 @@ class W5500():
         self.write8(SN_CR, SN0_REGISTER, 0x1) # OPEN
         # Could check SN_SR for 0x42 / SN_IR
         # OPEN interrupt is on, no need to manually check
+        
+        # Attach Interrupt
+        self._int_pin.irq(
+            self.isr_wrapper,
+            machine.Pin.IRQ_FALLING
+        )
+        
+        
+        
+        
+        
+        
+        
+
