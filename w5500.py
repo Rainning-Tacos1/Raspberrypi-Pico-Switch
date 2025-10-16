@@ -5,6 +5,7 @@
 from micropython import const, schedule
 import machine
 import time
+import asyncio
 
 COMMON_REGISTER = const(0b00)
 SN0_REGISTER = const(0b01)
@@ -57,8 +58,9 @@ class W5500():
         self.cs_pin = machine.Pin(self.cs, machine.Pin.OUT)
         self.rst_pin = machine.Pin(self.rst, machine.Pin.OUT)
         self._int_pin = machine.Pin(self._int, machine.Pin.IN, machine.Pin.PULL_UP)
+    
+        self.isr_flag = asyncio.ThreadSafeFlag()
         
-        self._isr_safe = self.isr_safe
         
         self.spi = machine.SPI(
             id=self.port,
@@ -72,6 +74,34 @@ class W5500():
             machine.Pin.IN,
             machine.Pin.PULL_UP
         )
+        
+    async def isr_task(self):
+        while True:
+            # Wait for interrupt
+            await self.isr_flag.wait()
+            # Read which socket caused interrupts
+            # Only socket 0 should be triggering interrupts bc of the SIMR
+            
+            #_IR = self.read8(IR, COMMON_REGISTER)
+            _SIR = self.read8(SIR, COMMON_REGISTER)
+            if _SIR[0] != 0x1: # Interrupt not on socket 0
+                return
+
+            SN0_IR = self.read8(SN_IR, SN0_REGISTER)[0]
+            
+            # Process the interurpt
+            str_int = ""
+            str_int += "SEND_OK " if SN0_IR & 0b10000 else ""
+            str_int += "TIMEOUT " if SN0_IR & 0b01000 else ""
+            str_int += "RECV "    if SN0_IR & 0b00100 else ""
+            str_int += "DISCON "  if SN0_IR & 0b00010 else ""
+            str_int += "CON "     if SN0_IR & 0b00001 else ""
+            
+            # Acknowledge the interrupt
+            self.write8(SN_IR, SN0_REGISTER, SN0_IR)
+            
+            # Execute user interrupt
+            await self.isr(str_int)
         
     def spi_init(self):
         self.spi.init(
@@ -128,39 +158,9 @@ class W5500():
             (10, "Full"),
             (100, "Full")
         )
-        
+        print(f"LNIK: {status & 0x1}")
         return (link[status >> 0x1]) if (status & 0x1) else None
-    
-    def isr_safe(self, _):
-        # Read which socket caused interrupts
-        # Only socket 0 should be triggering interrupts bc of the SIMR
-        
-        #_IR = self.read8(IR, COMMON_REGISTER)
-        _SIR = self.read8(SIR, COMMON_REGISTER)
-        if _SIR[0] != 0x1: # Interrupt not on socket 0
-            return
 
-        SN0_IR = self.read8(SN_IR, SN0_REGISTER)[0]
-        
-        # Process the interurpt
-        str_int = ""
-        str_int += "SEND_OK " if SN0_IR & 0b10000 else ""
-        str_int += "TIMEOUT " if SN0_IR & 0b01000 else ""
-        str_int += "RECV "    if SN0_IR & 0b00100 else ""
-        str_int += "DISCON "  if SN0_IR & 0b00010 else ""
-        str_int += "CON "     if SN0_IR & 0b00001 else ""
-        
-        # Acknowledge the interrupt
-        self.write8(SN_IR, SN0_REGISTER, SN0_IR)
-        
-        # Call the user ISR
-        self.isr(str_int)
-    
-    def isr_wrapper(self, pin):
-        schedule(self.isr_safe, 0)
-        
-    
-    
     def init(self):
         self.spi_init()
         self.reset()
@@ -194,17 +194,12 @@ class W5500():
         self.write8(SN_CR, SN0_REGISTER, 0x1) # OPEN
         # Could check SN_SR for 0x42 / SN_IR
         # OPEN interrupt is on, no need to manually check
-        
+
+        while self.read8(SN_SR, SN0_REGISTER)[0] != 0x42:
+            time.sleep_ms(200) # Idk, 200 seems good
+
         # Attach Interrupt
         self._int_pin.irq(
-            self.isr_wrapper,
+            lambda pin: self.isr_flag.set(), #self.isr_wrapper,
             machine.Pin.IRQ_FALLING
         )
-        
-        
-        
-        
-        
-        
-        
-
