@@ -61,7 +61,7 @@ class W5500():
 		GPIO.output(self.cs_pin, GPIO.HIGH)
 		GPIO.output(self.rst_pin, GPIO.HIGH)
 
-	def _isr(self):
+	def _isr(self, _):
 		print("INT")
 		# Read which socket caused interrupts
 		# Only socket 0 should be triggering interrupts bc of the SIMR
@@ -95,12 +95,12 @@ class W5500():
 	
 	def write8(self, addr: int, bsb: int, data: int):
 		print(f"{data:02X}")
-		self.write(addr, bsb, data)
+		self.write(addr, bsb, list(data.to_bytes(1)))
 	
 	def write16(self, addr: int, bsb: int, data: int):
-		self.write(addr, bsb, data)
+		self.write(addr, bsb, list(data.to_bytes(2, 'big')))
 	
-	def write(self, addr: int, bsb: int, data: int) -> None:
+	def write(self, addr: int, bsb: int, data: list[int]) -> None:
 		GPIO.output(self.cs_pin, GPIO.LOW)
 		self.spi.writebytes(list(
 			addr.to_bytes(2, 'big')
