@@ -182,8 +182,8 @@ class W5500():
 		# Could check SN_SR for 0x42 / SN_IR
 		# OPEN interrupt is on, no need to manually check
 
-		#while self.read8(SN_SR, SN0_REGISTER)[0] != 0x42:
-		#	time.sleep(0.2) # Idk, 200ms seems good
+		while self.read8(SN_SR, SN0_REGISTER)[0] != 0x42:
+			time.sleep(0.2) # Idk, 200ms seems good
 
 		# Attach Interrupt
 		GPIO.add_event_detect(self.int_pin, GPIO.FALLING, callback=self._isr, bouncetime=None)
