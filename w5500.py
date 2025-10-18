@@ -67,25 +67,31 @@ class W5500():
 		# Only socket 0 should be triggering interrupts bc of the SIMR
 			
 		#_IR = self.read8(IR, COMMON_REGISTER)
-		_SIR = self.read8(SIR, COMMON_REGISTER)
-		if _SIR[0] != 0x1: # Interrupt not on socket 0
+		sir = self.read8(SIR, COMMON_REGISTER)[0]
+		print(f"SIR: {sir:08b}")
+		if sir != 0x1: # Interrupt not on socket 0
 			return
 
-		SN0_IR = self.read8(SN_IR, SN0_REGISTER)[0]
-			
+		sn0_ir = self.read8(SN_IR, SN0_REGISTER)[0]
+		print(f"SN0_IR: {sn0_ir:08b}")
+
 		# Process the interurpt
-		str_int = ""
-		str_int += "SEND_OK " if SN0_IR & 0b10000 else ""
-		str_int += "TIMEOUT " if SN0_IR & 0b01000 else ""
-		str_int += "RECV "	if SN0_IR & 0b00100 else ""
-		str_int += "DISCON "  if SN0_IR & 0b00010 else ""
-		str_int += "CON "	 if SN0_IR & 0b00001 else ""
+		if sn0_ir == 0x0:
+			str_int = "INVALID INTERRUPT ON SOC 0"
+		else:
+			str_int += "SEND_OK " if sn0_ir & 0b10000 else ""
+			str_int += "TIMEOUT " if sn0_ir & 0b01000 else ""
+			str_int += "RECV "	if sn0_ir & 0b00100 else ""
+			str_int += "DISCON "  if sn0_ir & 0b00010 else ""
+			str_int += "CON "	 if sn0_ir & 0b00001 else ""
+
 			
 		# Acknowledge the interrupt
-		self.write8(SN_IR, SN0_REGISTER, SN0_IR)
+		self.write8(SN_IR, SN0_REGISTER, sn0_ir)
 			
 		# Execute user interrupt
 		self.isr(str_int)
+		print("INT DONE")
   
 	def reset(self):
 		GPIO.output(self.rst_pin, GPIO.LOW)
@@ -94,7 +100,6 @@ class W5500():
 		time.sleep(0.01)
 	
 	def write8(self, addr: int, bsb: int, data: int):
-		print(f"{data:02X}")
 		self.write(addr, bsb, list(data.to_bytes(1)))
 	
 	def write16(self, addr: int, bsb: int, data: int):
@@ -109,7 +114,7 @@ class W5500():
 			int((bsb << 3) | 0b100).to_bytes(1)
 		))
 		self.spi.writebytes(data)
-		GPIO.output(self.cs_pin, GPIO.LOW)
+		GPIO.output(self.cs_pin, GPIO.HIGH)
 
 	def read8(self, addr: int, bsb: int):
 		return self.read(addr, bsb, 1)
